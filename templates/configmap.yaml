@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ template "fluent-bit-loki.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ template "fluent-bit-loki.name" . }}
+    chart: {{ template "fluent-bit-loki.chart" . }}
+    release: {{ .Release.Name }}
+    heritage: {{ .Release.Service }}
+data:
+  fluent-bit.conf: |-
+    [SERVICE]
+        HTTP_Server    On
+        HTTP_Listen    0.0.0.0
+        HTTP_PORT      {{ .Values.config.port }}
+        Flush          1
+        Daemon         Off
+        Log_Level      {{ .Values.config.loglevel }}
+        Parsers_File   parsers.conf
+    [INPUT]
+        Name              tail
+        Tag               kube.*
+        Path              /var/log/containers/*.log
+        Parser            docker
+        DB                /run/fluent-bit/flb_kube.db
+        Mem_Buf_Limit     {{ .Values.config.memBufLimit }}
+        Buffer_Chunk_size {{ .Values.config.bufChunkSize }}
+        Buffer_Max_size   {{ .Values.config.bufMaxSize }}
+    [INPUT]
+        Name            node_exporter_metrics
+        Tag             node_metrics
+        path.procfs           /host/proc
+        path.sysfs            /host/sys
+        scrape_interval 2
+    # [FILTER]
+        # Name           kubernetes
+        # Match          kube.*
+        # Kube_URL       https://kubernetes.default.svc:443
+        # Merge_Log On
+        # K8S-Logging.Exclude {{ .Values.config.k8sLoggingExclude }}
+        # K8S-Logging.Parser {{ .Values.config.k8sLoggingParser }}
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Kube_URL            https://kubernetes.default.svc:443
+        # Kube_CA_File        /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        # Kube_Token_File     /var/run/secrets/kubernetes.io/serviceaccount/token
+        Kube_Tag_Prefix     kube.var.log.containers.
+        Merge_Log           Off
+        Merge_Log_Key       log_processed
+        K8S-Logging.Exclude {{ .Values.config.k8sLoggingExclude }}
+        K8S-Logging.Parser {{ .Values.config.k8sLoggingParser }}
+
+    [Output]
+        Name grafana-loki
+        Match *
+        {{- if and .Values.loki.user .Values.loki.password }}
+        Url {{ .Values.loki.serviceScheme }}://{{ .Values.loki.user }}:{{ .Values.loki.password }}@{{ include "loki.serviceName" . }}:{{ .Values.loki.servicePort }}{{ .Values.loki.servicePath }}
+          {{- else }}
+        Url {{ .Values.loki.serviceScheme }}://{{ include "loki.serviceName" . }}:{{ .Values.loki.servicePort }}{{ .Values.loki.servicePath }}
+        {{- end }}
+        TenantID {{ .Values.config.tenantID }}
+        BatchWait {{ .Values.config.batchWait }}
+        BatchSize {{ int .Values.config.batchSize }}
+        Labels {{ .Values.config.labels }}
+        RemoveKeys {{ include "helm-toolkit.utils.joinListWithComma" .Values.config.removeKeys }}
+        AutoKubernetesLabels {{ .Values.config.autoKubernetesLabels }}
+        LabelMapPath /fluent-bit/etc/labelmap.json
+        LineFormat {{ .Values.config.lineFormat }}
+        LogLevel {{ .Values.config.loglevel }}
+    {{- range $extraOutput := .Values.config.extraOutputs }}
+    [OUTPUT]
+    {{- range $key,$value := $extraOutput }}
+        {{ $key }} {{ $value }}
+    {{- end }}
+    {{- end }}
+    [OUTPUT]
+        name            prometheus_exporter
+        match           node_metrics
+        host            0.0.0.0
+        port            9100
+        # add user-defined labels
+        add_label       app fluent-bit
+        add_label       color blue
+  parsers.conf: |-
+    [PARSER]
+        Name        docker
+        Format      json
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L
+        Time_Keep   On
+    
+    [PARSER]
+        Name cri
+        Format regex
+        Regex ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<message>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+
+    [PARSER]
+        Name        syslog
+        Format      regex
+        Regex       ^\<(?<pri>[0-9]+)\>(?<time>[^ ]* {1,2}[^ ]* [^ ]*) (?<host>[^ ]*) (?<ident>[a-zA-Z0-9_\/\.\-]*)(?:\[(?<pid>[0-9]+)\])?(?:[^\:]*\:)? *(?<message>.*)$
+        Time_Key    time
+        Time_Format %b %d %H:%M:%S
+
+    {{- range $parser:= .Values.config.parsers }}
+    [PARSER]
+    {{- range $key,$value := $parser }}
+        {{ $key }} {{ $value }}
+    {{- end }}
+    {{- end }}
+
+  labelmap.json: |-
+    {{- .Values.config.labelMap | toPrettyJson | nindent 4}}
+
