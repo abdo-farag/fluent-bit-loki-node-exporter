@@ -39,4 +39,5 @@ helm uninstall fluent-bit -n observation
 helm uninstall prometheus -n observation
 helm uninstall loki -n observation
 helm uninstall grafana -n observation
+kubectl delete namespace observation
 ```
